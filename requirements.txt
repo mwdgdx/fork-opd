@@ -1,0 +1,7 @@
+# install on the mcli box via the Databricks proxy, NOT public PyPI:
+#   pip install --trusted-host pypi-proxy.dev.databricks.com \
+#       -i https://pypi-proxy.dev.databricks.com/simple/ -r requirements.txt
+vllm
+transformers
+datasets
+math_verify

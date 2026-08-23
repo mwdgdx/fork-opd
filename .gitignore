@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+# data / checkpoints stay off git (deploy via git, data via generation on the box)
+data/
+out/
+*.jsonl
+*.parquet
+checkpoints/
+*.log
+wandb/
