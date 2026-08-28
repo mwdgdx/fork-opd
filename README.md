@@ -41,13 +41,31 @@ teacher-size sweep, cross-pair transfer) is a later ablation, not part of basic 
 - weak feedback = final-answer correctness only
 - difficulty band: student pass-rate ~20–60% (maximizes salvageable failures)
 
-## Build milestones
+## Build (Path B: lightweight offline/batched, frozen external teacher, vLLM generation)
 
-1. **[in progress] data generation** — `data_gen/generate_rollouts.py`: student rollouts on
-   DAPO-Math, verify answers, keep band-difficulty problems, save failed trajectories.
-2. **fork training loop** — `fork/fork_loss.py`: mixed loss with `k` (k=0 / no-fork / fixed-k
-   all covered). Built on the SDPO/verl trainer.
-3. **learned gate** — probe on teacher hidden states; start supervised (cheap error-onset
-   proxy), then contextual-bandit refinement.
+We do NOT reuse the SDPO/verl online loop: its "teacher" is an EMA self-teacher + privileged
+reprompt (small gap), whereas we need a strong external teacher (large gap). Path B keeps the
+frozen 8B teacher offline (vLLM), constructs fork trajectories, and trains the student in a
+light loop — the fork-vs-whole-rewrite comparison is unaffected, and it avoids the verl
+teacher-worker lift. Scale to verl later if needed.
+
+1. **[done] data generation** — `data_gen/generate_rollouts.py`: student rollouts on DAPO-Math,
+   `math_verify` checking, difficulty-band filter, save failed trajectories (+ token ids).
+2. **[done] teacher construction** — `teacher/build_fork_data.py`: frozen 8B teacher generates
+   the suffix from fork point `k` (policies: whole / nofork / fixed_frac / fixed_k), verifies
+   recovery, and reports the efficiency metric (teacher gen tokens + generation wall-clock).
+3. **[partial] training** — `fork/train.py`: imitation (CE) loss on the teacher suffix. Fully
+   covers the **whole-rewrite baseline**; fork's on-policy PREFIX loss (reverse KL) is the next
+   addition (needs teacher prefix top-k logprobs pre-saved in step 2). `fork/fork_loss.py` is the
+   mixed-loss reference (`fork_k` recovers whole-rewrite / no-fork / fork).
+4. **[todo] learned gate** — probe on teacher hidden states; supervised warmup on a cheap
+   error-onset proxy, then contextual-bandit refinement.
+
+## Efficiency claim = WALL-CLOCK, not FLOPs
+
+Fork adds one teacher forward pass but does *less autoregressive generation*. In FLOPs fork can
+be higher; the win is wall-clock, because autoregressive teacher generation is the bottleneck.
+Report **teacher generated tokens (T−k vs T)** and **generation wall-clock under vLLM** — never
+FLOPs. Use vLLM generation for every arm so wall-clock is realistic.
 
 Compute runs on an mcli GPU box (launched by the user); this repo is code + git only.
