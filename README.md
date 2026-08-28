@@ -6,6 +6,22 @@ tokens, reverse KL); the suffix is teacher-generated (imitation / forward KL). T
 subsumes the two fixed strategies — `no-fork` = pure on-policy, `k=0` = whole-rewrite —
 so it can only help if *where to fork* matters.
 
+## Quickstart (on the mcli GPU box)
+
+```bash
+git clone git@github.com:mwdgdx/fork-opd.git && cd fork-opd
+bash run.sh                       # fast SMOKE run (50 problems), whole-rewrite baseline arm
+```
+
+`run.sh` installs deps via the Databricks pip proxy, then runs the whole-rewrite arm
+end-to-end: student rollouts → teacher rewrites (verify + wall-clock print) → train.
+Dataset and models download from HF at runtime. Scale up with env vars, e.g.
+`NUM_PROBLEMS=2000 MAX_TOKENS=8192 TP=2 bash run.sh`. `SKIP_SETUP=1` skips reinstall.
+
+> Untested locally (this repo is authored on a CPU box). Expect to fix small issues on
+> the first box run — most likely the DAPO field names (override `--question-field` /
+> `--answer-field` in `generate_rollouts.py`) or GPU memory (`TP`, `MAX_TOKENS`).
+
 ## Why it might beat whole-rewrite
 
 Whole-rewrite (teacher rewrites the entire failed trajectory) produces the *best-looking*
