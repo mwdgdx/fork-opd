@@ -1,7 +1,7 @@
-# install on the mcli box via the Databricks proxy, NOT public PyPI:
+# torch / transformers / vllm already ship in the mcli DLE image — do NOT reinstall.
+# Only these light extras are missing. Install via the Databricks proxy (see setup.sh),
+# never public PyPI:
 #   pip install --trusted-host pypi-proxy.dev.databricks.com \
 #       -i https://pypi-proxy.dev.databricks.com/simple/ -r requirements.txt
-vllm
-transformers
 datasets
 math_verify

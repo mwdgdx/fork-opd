@@ -12,7 +12,7 @@ cd "$(dirname "$0")"
 STUDENT=${STUDENT:-Qwen/Qwen3-1.7B}
 TEACHER=${TEACHER:-Qwen/Qwen3-8B}
 DATASET=${DATASET:-BytedTsinghua-SIA/DAPO-Math-17k}
-NUM_PROBLEMS=${NUM_PROBLEMS:-50}
+NUM_PROBLEMS=${NUM_PROBLEMS:-20}
 NUM_SAMPLES=${NUM_SAMPLES:-8}
 MAX_TOKENS=${MAX_TOKENS:-4096}
 TP=${TP:-1}                 # tensor-parallel size for the 8B teacher
