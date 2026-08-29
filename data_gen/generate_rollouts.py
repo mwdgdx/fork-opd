@@ -47,13 +47,18 @@ def extract_question(row: dict, field: str) -> str:
 
 
 def extract_ground_truth(row: dict, field: str) -> str:
-    if field in row and row[field] is not None:
-        return str(row[field])
+    val = row.get(field)
+    # verl-style: the field is a dict like {"ground_truth": "34", "style": ...}
+    if isinstance(val, dict):
+        if val.get("ground_truth") is not None:
+            return str(val["ground_truth"])
+    elif val is not None:
+        return str(val)
     rm = row.get("reward_model")
     if isinstance(rm, dict) and rm.get("ground_truth") is not None:
         return str(rm["ground_truth"])
     for cand in ("answer", "solution", "final_answer"):
-        if cand in row and row[cand] is not None:
+        if row.get(cand) is not None:
             return str(row[cand])
     raise KeyError(f"no ground-truth field found in row keys={list(row)}")
 
