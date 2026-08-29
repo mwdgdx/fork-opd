@@ -82,6 +82,7 @@ def main():
     ap.add_argument("--max-new-tokens", type=int, default=4096)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--gpu-mem-util", type=float, default=0.6)
+    ap.add_argument("--tp", type=int, default=8, help="vLLM tensor-parallel size (use all GPUs)")
     ap.add_argument("--features-cache", default="out/gate_features.pt")
     ap.add_argument("--out", default="out/gate.pt")
     args = ap.parse_args()
@@ -106,7 +107,7 @@ def main():
 
     # ---- Phase B: vLLM teacher + bandit ----
     from vllm import LLM, SamplingParams
-    llm = LLM(model=args.teacher, tensor_parallel_size=1, gpu_memory_utilization=args.gpu_mem_util)
+    llm = LLM(model=args.teacher, tensor_parallel_size=args.tp, gpu_memory_utilization=args.gpu_mem_util)
     sp = SamplingParams(temperature=args.temperature, top_p=0.95, max_tokens=args.max_new_tokens)
 
     gate = ForkGate(fdim).cuda()

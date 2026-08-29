@@ -35,6 +35,7 @@ def main():
     ap.add_argument("--max-traj", type=int, default=0)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--max-new-tokens", type=int, default=4096)
+    ap.add_argument("--tp", type=int, default=8)
     ap.add_argument("--out", default="out/oracle.json")
     args = ap.parse_args()
 
@@ -59,7 +60,7 @@ def main():
                 prompts.append({"prompt_token_ids": ctx})
                 meta.append((i, k, R))
 
-    llm = LLM(model=args.teacher, tensor_parallel_size=1, gpu_memory_utilization=0.6)
+    llm = LLM(model=args.teacher, tensor_parallel_size=args.tp, gpu_memory_utilization=0.6)
     sp = SamplingParams(temperature=args.temperature, top_p=0.95, max_tokens=args.max_new_tokens)
     outs = llm.generate(prompts, sampling_params=sp)
 
