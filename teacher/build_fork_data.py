@@ -105,7 +105,7 @@ def main() -> None:
                         max_tokens=args.max_new_tokens)
 
     t0 = time.perf_counter()
-    results = llm.generate(prompt_token_ids=contexts, sampling_params=sp)
+    results = llm.generate([{"prompt_token_ids": c} for c in contexts], sampling_params=sp)
     gen_wall_s = time.perf_counter() - t0
 
     total_gen_tokens = 0

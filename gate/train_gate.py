@@ -128,7 +128,8 @@ def main():
                 gen_prompts.append(ctx)
                 gen_meta.append((idx, a))
         # 2. batch-generate suffixes
-        outs = llm.generate(prompt_token_ids=gen_prompts, sampling_params=sp) if gen_prompts else []
+        outs = (llm.generate([{"prompt_token_ids": c} for c in gen_prompts], sampling_params=sp)
+                if gen_prompts else [])
         rewards_by_idx = {}
         rec_cnt = 0
         for (idx, k), o in zip(gen_meta, outs):
