@@ -81,7 +81,7 @@ def main():
     ap.add_argument("--entropy-beta", type=float, default=0.01)
     ap.add_argument("--max-new-tokens", type=int, default=4096)
     ap.add_argument("--temperature", type=float, default=0.7)
-    ap.add_argument("--gpu-mem-util", type=float, default=0.6)
+    ap.add_argument("--gpu-mem-util", type=float, default=0.45)
     ap.add_argument("--tp", type=int, default=8, help="vLLM tensor-parallel size (use all GPUs)")
     ap.add_argument("--features-cache", default="out/gate_features.pt")
     ap.add_argument("--out", default="out/gate.pt")
@@ -148,16 +148,19 @@ def main():
             rewards_by_idx[idx] = r
         # 3. REINFORCE update
         opt.zero_grad()
-        losses, rlist, klist = [], [], []
-        for idx, a in actions:
-            ex = pool[idx]; R = len(ex["resp_ids"])
-            r = rewards_by_idx.get(idx, 0.0)     # no-fork -> reward 0
-            feats = feats_cpu[idx].cuda()
-            logp, ent = gate.logprob_entropy(feats, a)
-            losses.append(-logp * (r - baseline) - args.entropy_beta * ent)
-            rlist.append(r); klist.append(a / R if a < R else 1.0)
-        loss = torch.stack(losses).mean()
-        loss.backward()
+        rlist, klist = [], []
+        B = len(actions)
+        CHUNK = 128     # backward per chunk so we never hold all B graphs (OOM at scale)
+        for c0 in range(0, B, CHUNK):
+            chunk_losses = []
+            for idx, a in actions[c0:c0 + CHUNK]:
+                ex = pool[idx]; R = len(ex["resp_ids"])
+                r = rewards_by_idx.get(idx, 0.0)     # no-fork -> reward 0
+                feats = feats_cpu[idx].cuda()
+                logp, ent = gate.logprob_entropy(feats, a)
+                chunk_losses.append(-logp * (r - baseline) - args.entropy_beta * ent)
+                rlist.append(r); klist.append(a / R if a < R else 1.0)
+            (torch.stack(chunk_losses).sum() / B).backward()   # grad accumulates across chunks
         opt.step()
         mean_r = sum(rlist) / len(rlist)
         baseline = 0.9 * baseline + 0.1 * mean_r
