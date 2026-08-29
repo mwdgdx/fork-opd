@@ -149,6 +149,7 @@ def main():
         # 3. REINFORCE update
         opt.zero_grad()
         rlist, klist = [], []
+        epoch_loss = 0.0
         B = len(actions)
         CHUNK = 128     # backward per chunk so we never hold all B graphs (OOM at scale)
         for c0 in range(0, B, CHUNK):
@@ -160,12 +161,14 @@ def main():
                 logp, ent = gate.logprob_entropy(feats, a)
                 chunk_losses.append(-logp * (r - baseline) - args.entropy_beta * ent)
                 rlist.append(r); klist.append(a / R if a < R else 1.0)
-            (torch.stack(chunk_losses).sum() / B).backward()   # grad accumulates across chunks
+            l = torch.stack(chunk_losses).sum() / B
+            l.backward()                            # grad accumulates across chunks
+            epoch_loss += float(l.item())
         opt.step()
         mean_r = sum(rlist) / len(rlist)
         baseline = 0.9 * baseline + 0.1 * mean_r
         print(f"[epoch {ep}] mean_reward={mean_r:.3f} recover={rec_cnt}/{len(gen_meta)} "
-              f"mean_k/R={sum(klist)/len(klist):.2f} loss={loss.item():.3f}", flush=True)
+              f"mean_k/R={sum(klist)/len(klist):.2f} loss={epoch_loss:.3f}", flush=True)
 
     torch.save({"state_dict": gate.state_dict(), "feat_dim": fdim, "hidden": hidden, "topk": TOPK}, args.out)
     print(f"[done] gate saved -> {args.out}")
