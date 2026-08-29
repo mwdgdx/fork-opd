@@ -77,6 +77,9 @@ def main() -> None:
     ap.add_argument("--max-tokens", type=int, default=4096)
     ap.add_argument("--band-low", type=float, default=0.2)
     ap.add_argument("--band-high", type=float, default=0.6)
+    ap.add_argument("--enable-thinking", action="store_true",
+                    help="Qwen3 thinking mode. Default OFF (non-thinking, like Relay's "
+                         "Qwen3-1.7B-Non-Thinking) — thinking CoT overflows the token budget.")
     ap.add_argument("--tensor-parallel-size", type=int, default=1)
     ap.add_argument("--out", default="out/failures.jsonl")
     args = ap.parse_args()
@@ -97,7 +100,12 @@ def main() -> None:
         chat = [
             {"role": "user", "content": f"{INSTRUCTION}\n\n{q}"},
         ]
-        prompts.append(tok.apply_chat_template(chat, tokenize=False, add_generation_prompt=True))
+        try:
+            rendered = tok.apply_chat_template(chat, tokenize=False, add_generation_prompt=True,
+                                               enable_thinking=args.enable_thinking)
+        except TypeError:  # tokenizer without the enable_thinking kwarg
+            rendered = tok.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+        prompts.append(rendered)
         questions.append(q)
         gts.append(gt)
 
