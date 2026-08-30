@@ -59,7 +59,7 @@ def main():
     for (i, tag, k), o in zip(meta, outs):
         r = rows[i]
         prefix = tok.decode(r["token_ids"][:k], skip_special_tokens=True)
-        ok = is_correct(prefix + o.outputs[0].text, r["gt"])
+        ok = is_correct(prefix + o.outputs[0].text, r["ground_truth"])
         cur = rec.setdefault((i, tag), {"any": False, "text": "", "k": k})
         if ok and not cur["any"]:
             cur["any"], cur["text"] = True, o.outputs[0].text
