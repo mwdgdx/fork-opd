@@ -75,9 +75,9 @@ def main():
     ap.add_argument("--max-traj", type=int, default=300)
     ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--lambda-c", type=float, default=0.3)
-    ap.add_argument("--lambda-p", type=float, default=0.5)
-    ap.add_argument("--wrong-prefix-thresh", type=float, default=0.1)
+    ap.add_argument("--lambda-c", type=float, default=0.1)     # tiny suffix-length (compute) penalty
+    ap.add_argument("--lambda-keep", type=float, default=0.3)  # small keep-prefix bonus, ONLY among recoveries
+    ap.add_argument("--lambda-fail", type=float, default=0.2)  # penalty for not recovering
     ap.add_argument("--entropy-beta", type=float, default=0.01)
     ap.add_argument("--max-new-tokens", type=int, default=4096)
     ap.add_argument("--temperature", type=float, default=0.7)
@@ -139,12 +139,13 @@ def main():
             prefix_text = tok.decode(ex["resp_ids"][:k], skip_special_tokens=True)
             recovered = is_correct(prefix_text + suffix.text, ex["gt"])
             rec_cnt += int(recovered)
-            feats = feats_cpu[idx]
-            p_tea_prefix = feats[:k, p_teacher_col]
-            wrong_frac = float((p_tea_prefix < args.wrong_prefix_thresh).float().mean()) if k > 0 else 0.0
-            r = (float(recovered) * (k / R)
-                 - args.lambda_c * (len(suffix.token_ids) / args.max_new_tokens)
-                 - args.lambda_p * wrong_frac)
+            # RECOVERY dominates: big fixed reward for recovering; keep-prefix + short-suffix
+            # are only small tie-breakers AMONG recoveries. Not recovering -> penalty.
+            if recovered:
+                r = (1.0 + args.lambda_keep * (k / R)
+                     - args.lambda_c * (len(suffix.token_ids) / args.max_new_tokens))
+            else:
+                r = -args.lambda_fail
             rewards_by_idx[idx] = r
         # 3. REINFORCE update
         opt.zero_grad()
