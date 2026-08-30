@@ -19,10 +19,20 @@ import torch
 import torch.nn as nn
 
 
+def sinusoidal_pe(R, dim, device):
+    pos = torch.arange(R, device=device).float().unsqueeze(1)
+    i = torch.arange(dim, device=device).float().unsqueeze(0)
+    angle = pos / (10000.0 ** (2 * (i // 2) / dim))
+    pe = torch.zeros(R, dim, device=device)
+    pe[:, 0::2] = torch.sin(angle[:, 0::2])
+    pe[:, 1::2] = torch.cos(angle[:, 1::2])
+    return pe
+
+
 class SupGate(nn.Module):
     def __init__(self, feat_dim, hidden=256, seq_model=True, n_layers=2, n_heads=4):
         super().__init__()
-        self.proj = nn.Linear(feat_dim, hidden)
+        self.proj = nn.Linear(feat_dim + 1, hidden)   # +1 for k/R (normalized position)
         if seq_model:
             layer = nn.TransformerEncoderLayer(hidden, n_heads, hidden * 2, batch_first=True,
                                                activation="gelu", dropout=0.0)
@@ -32,8 +42,14 @@ class SupGate(nn.Module):
         self.head = nn.Linear(hidden, 1)
 
     def forward(self, feats):                 # [R, D] -> per-position logit [R]
-        x = self.proj(feats)
-        x = self.seq(x.unsqueeze(0)).squeeze(0) if isinstance(self.seq, nn.TransformerEncoder) else self.seq(x)
+        R = feats.shape[0]
+        posfrac = (torch.arange(R, device=feats.device).float() / max(R - 1, 1)).unsqueeze(1)
+        x = self.proj(torch.cat([feats, posfrac], dim=-1))
+        if isinstance(self.seq, nn.TransformerEncoder):
+            x = x + sinusoidal_pe(R, x.shape[1], x.device)   # position-aware attention
+            x = self.seq(x.unsqueeze(0)).squeeze(0)
+        else:
+            x = self.seq(x)
         return self.head(x).squeeze(-1)
 
 
