@@ -93,6 +93,20 @@ def main():
           f"recoverable by SOME candidate fork")
     print(f"[whole-rewrite-only] {whole_rewrite_only} recovered ONLY at k=0 "
           f"(student prefix unsalvageable -> teacher from scratch)")
+    # decomposition: what heuristics (early fork) miss but oracle catches
+    import statistics as _s
+    recovered_at_0 = sum(1 for i in range(n) if 0 in recov[i])
+    late_only = [i for i in range(n) if recov[i] and 0 not in recov[i]]
+    print(f"[decomp] recovered at k=0 (whole-rewrite works): {recovered_at_0} ({recovered_at_0/n:.1%})")
+    print(f"[decomp] LATE-ONLY (recovers at k>0 but NOT k=0 => student prefix ESSENTIAL): "
+          f"{len(late_only)} ({len(late_only)/n:.1%})")
+    if late_only:
+        mink = [min(recov[i]) / len(rows[i]["token_ids"]) for i in late_only]
+        print(f"  late-only earliest-recovering k/R: median={_s.median(mink):.2f}")
+        lb = defaultdict(int)
+        for i in late_only:
+            lb[round(rows[i].get("pass_rate", -1), 2)] += 1
+        print(f"  late-only student-pass-rate bands: {dict(sorted(lb.items()))}")
     if kstar_frac:
         import statistics as s
         print(f"[k*/R among recovered] median={s.median(kstar_frac):.2f} "
