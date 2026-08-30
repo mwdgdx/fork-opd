@@ -75,9 +75,10 @@ def main():
     ap.add_argument("--max-traj", type=int, default=300)
     ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--lambda-c", type=float, default=0.1)     # tiny suffix-length (compute) penalty
-    ap.add_argument("--lambda-keep", type=float, default=0.3)  # small keep-prefix bonus, ONLY among recoveries
-    ap.add_argument("--lambda-fail", type=float, default=0.2)  # penalty for not recovering
+    ap.add_argument("--lambda-c", type=float, default=0.05)    # tiny suffix-length (compute) tiebreak
+    ap.add_argument("--lambda-fail", type=float, default=0.5)  # penalty for not recovering (enforces recovery)
+    ap.add_argument("--seq-model", type=int, default=1)        # 1 = bidirectional attention; 0 = per-position MLP
+    ap.add_argument("--gate-hidden", type=int, default=256)
     ap.add_argument("--entropy-beta", type=float, default=0.01)
     ap.add_argument("--max-new-tokens", type=int, default=4096)
     ap.add_argument("--temperature", type=float, default=0.7)
@@ -110,7 +111,7 @@ def main():
     llm = LLM(model=args.teacher, tensor_parallel_size=args.tp, gpu_memory_utilization=args.gpu_mem_util)
     sp = SamplingParams(temperature=args.temperature, top_p=0.95, max_tokens=args.max_new_tokens)
 
-    gate = ForkGate(fdim).cuda()
+    gate = ForkGate(fdim, hidden=args.gate_hidden, seq_model=bool(args.seq_model)).cuda()
     opt = torch.optim.Adam(gate.parameters(), lr=args.lr)
     baseline = 0.0
 
@@ -141,10 +142,9 @@ def main():
             rec_cnt += int(recovered)
             # RECOVERY dominates: big fixed reward for recovering; keep-prefix + short-suffix
             # are only small tie-breakers AMONG recoveries. Not recovering -> penalty.
-            if recovered:
-                r = (1.0 + args.lambda_keep * (k / R)
-                     - args.lambda_c * (len(suffix.token_ids) / args.max_new_tokens))
-            else:
+            if recovered:   # reward = fraction of prefix kept; maximize prefix AMONG recoveries
+                r = (k / R) - args.lambda_c * (len(suffix.token_ids) / args.max_new_tokens)
+            else:           # not recovering is strongly penalized -> gate can't fork-late-and-fail
                 r = -args.lambda_fail
             rewards_by_idx[idx] = r
         # 3. REINFORCE update
