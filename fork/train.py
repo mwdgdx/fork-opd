@@ -80,6 +80,8 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.student, torch_dtype=torch.bfloat16, device_map="cuda"
     )
+    model.gradient_checkpointing_enable()   # long fork sequences + full finetune -> avoid OOM
+    model.config.use_cache = False
     model.train()
 
     ds = ForkDataset(args.data, tok, args.max_len)
