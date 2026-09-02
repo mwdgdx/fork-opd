@@ -144,24 +144,45 @@ def per_position_features(teacher, student, prompt_ids, resp_ids, topk, want_hid
     return feat, first_disagree, hidden
 
 
+def load_fork_points(out):
+    """Merge all fork_points*.json shards into one {str(traj_id): meta} dict."""
+    import glob
+    fp = {}
+    for f in glob.glob(os.path.join(out, "fork_points*.json")):
+        fp.update(json.load(open(f)))
+    return fp
+
+
 def phase_a(pool, teacher, student, args, dirs, device):
-    hidden_ids = stratified_subset(pool, args.hidden_subset, seed=0)
-    fork_points = {}
-    for n, ex in enumerate(pool):
-        want_hidden = ex["traj_id"] in hidden_ids
+    hidden_ids = stratified_subset(pool, args.hidden_subset, seed=0)   # global, deterministic
+    shard = [ex for i, ex in enumerate(pool) if i % args.num_shards == args.shard]
+    fp_path = os.path.join(args.out, f"fork_points.{args.shard}.json")
+    fork_points = json.load(open(fp_path)) if os.path.exists(fp_path) else {}
+    done = skipped = 0
+    for n, ex in enumerate(shard):
+        tid = ex["traj_id"]
+        feat_path = os.path.join(dirs["features"], f"{tid}.npz")
+        want_hidden = tid in hidden_ids
+        hid_path = os.path.join(dirs["hidden"], f"{tid}.npz")
+        if (os.path.exists(feat_path) and str(tid) in fork_points
+                and (not want_hidden or os.path.exists(hid_path))):
+            skipped += 1
+            continue
         feat, first_disagree, hidden = per_position_features(
             teacher, student, ex["prompt_ids"], ex["resp_ids"],
             args.topk, want_hidden, args.hidden_layers, device)
-        np.savez_compressed(os.path.join(dirs["features"], f"{ex['traj_id']}.npz"), **feat)
+        np.savez_compressed(feat_path, **feat)
         if hidden is not None:
-            np.savez_compressed(os.path.join(dirs["hidden"], f"{ex['traj_id']}.npz"), hidden=hidden)
-        fork_points[ex["traj_id"]] = {"R": len(ex["resp_ids"]), "first_disagree": first_disagree,
-                                      "problem_id": ex["problem_id"], "pass_rate": ex["pass_rate"]}
-        if (n + 1) % 50 == 0:
-            print(f"  [phase A] {n+1}/{len(pool)}", flush=True)
-    json.dump(fork_points, open(os.path.join(args.out, "fork_points.json"), "w"))
-    print(f"[phase A] features for {len(pool)} traj; hidden for {len(hidden_ids)}", flush=True)
-    return fork_points
+            np.savez_compressed(hid_path, hidden=hidden)
+        fork_points[str(tid)] = {"R": len(ex["resp_ids"]), "first_disagree": first_disagree,
+                                 "problem_id": ex["problem_id"], "pass_rate": ex["pass_rate"]}
+        done += 1
+        if done % 50 == 0:
+            json.dump(fork_points, open(fp_path, "w"))     # checkpoint (resumable)
+            print(f"  [phase A shard {args.shard}] {n+1}/{len(shard)} (new {done}, skip {skipped})", flush=True)
+    json.dump(fork_points, open(fp_path, "w"))
+    print(f"[phase A shard {args.shard}] done: {done} new, {skipped} skipped, "
+          f"{len(shard)} in shard; hidden pool {len(hidden_ids)}", flush=True)
 
 
 # ------------------------------------------------ Phase B: labels + text (vLLM)
@@ -182,19 +203,31 @@ def phase_b(pool, fork_points, args, dirs, tok):
     sp = SamplingParams(n=args.n_label, temperature=args.temperature, top_p=0.95,
                         max_tokens=args.max_new_tokens)
 
-    # build every (traj, policy) generation request
+    # already-done (traj_id, policy) pairs -> resume by skipping them
+    labels_path = os.path.join(args.out, "labels.jsonl")
+    done = set()
+    if os.path.exists(labels_path):
+        for line in open(labels_path):
+            d = json.loads(line)
+            done.add((d["traj_id"], d["policy"]))
+
+    # build every remaining (traj, policy) generation request
     reqs = []          # (traj_id, policy, k, prompt_token_ids, gt)
     by_traj = {ex["traj_id"]: ex for ex in pool}
     for ex in pool:
-        fp = fork_points[str(ex["traj_id"])] if str(ex["traj_id"]) in fork_points \
-            else fork_points[ex["traj_id"]]
+        fp = fork_points.get(str(ex["traj_id"])) or fork_points.get(ex["traj_id"])
+        if fp is None:
+            continue                                   # no features yet for this traj
         R = len(ex["resp_ids"])
         for pol in args.policies:
+            if (ex["traj_id"], pol) in done:
+                continue
             k = fork_k(pol, R, fp["first_disagree"])
             ctx = ex["prompt_ids"] + ex["resp_ids"][:k]
             reqs.append((ex["traj_id"], pol, k, ctx, ex["gt"]))
+    print(f"[phase B] {len(reqs)} requests to run ({len(done)} already done)", flush=True)
 
-    labels_f = open(os.path.join(args.out, "labels.jsonl"), "w")
+    labels_f = open(labels_path, "a")                  # append (resume-safe)
     for c0 in range(0, len(reqs), args.gen_chunk):
         chunk = reqs[c0:c0 + args.gen_chunk]
         outs = llm.generate([{"prompt_token_ids": c[3]} for c in chunk], sampling_params=sp)
@@ -215,6 +248,7 @@ def phase_b(pool, fork_points, args, dirs, tok):
                 "traj_id": traj_id, "policy": pol, "fork_k": k, "R": R,
                 "n": args.n_label, "recover_rate": n_rec / args.n_label,
             }) + "\n")
+        labels_f.flush()                               # checkpoint (resume-safe)
         print(f"  [phase B] {min(c0 + args.gen_chunk, len(reqs))}/{len(reqs)} reqs", flush=True)
     labels_f.close()
     print("[phase B] labels + completions written", flush=True)
@@ -245,6 +279,8 @@ def main():
     ap.add_argument("--gpu-mem-util", type=float, default=0.6)
     ap.add_argument("--tp", type=int, default=8)
     ap.add_argument("--gen-chunk", type=int, default=256)
+    ap.add_argument("--shard", type=int, default=0, help="Phase A data-parallel shard index")
+    ap.add_argument("--num-shards", type=int, default=1, help="Phase A: run this many GPU workers")
     ap.add_argument("--skip-phase-a", action="store_true")
     ap.add_argument("--skip-phase-b", action="store_true")
     args = ap.parse_args()
@@ -260,9 +296,9 @@ def main():
     pool = load_pool(args.pool, tok, args.max_traj)
     print(f"[pool] {len(pool)} trajectories, {len({e['problem_id'] for e in pool})} problems")
 
-    # ---- C. train/test split by problem_id ----
+    # ---- C. train/test split by problem_id (shard 0 only, to avoid write races) ----
     split_path = os.path.join(args.out, "split.json")
-    if not os.path.exists(split_path):
+    if args.shard == 0 and not os.path.exists(split_path):
         pids = sorted({ex["problem_id"] for ex in pool})
         rng = random.Random(0); rng.shuffle(pids)
         n_test = int(args.test_frac * len(pids))
@@ -282,14 +318,13 @@ def main():
         layer_map = {"mid": L // 2, "last": L}
         args.hidden_layers = [layer_map.get(x, None) or int(x) for x in args.hidden_layers.split(",")]
         print(f"[phase A] teacher L={L}, hidden layers stored = {args.hidden_layers}")
-        fork_points = phase_a(pool, teacher, student, args, dirs, device)
+        phase_a(pool, teacher, student, args, dirs, device)
         del teacher, student
         torch.cuda.empty_cache()
 
     # ---- B. recovery labels + completion text (vLLM teacher) ----
     if not args.skip_phase_b:
-        if fork_points is None:
-            fork_points = json.load(open(os.path.join(args.out, "fork_points.json")))
+        fork_points = load_fork_points(args.out)       # merge all shards
         phase_b(pool, fork_points, args, dirs, tok)
 
     json.dump(vars(args), open(os.path.join(args.out, "meta.json"), "w"), default=str)
