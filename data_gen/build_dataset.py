@@ -42,7 +42,7 @@ import torch
 sys.path.insert(0, os.path.dirname(__file__))
 from verify import is_correct  # noqa: E402
 
-POLICIES = ["whole_rewrite", "relay", "fixed0.5"]
+FRACS = [0.0, 0.15, 0.3, 0.45, 0.6, 0.75]   # fork at these fractions of the response
 
 
 # --------------------------------------------------------------------------- IO
@@ -186,14 +186,8 @@ def phase_a(pool, teacher, student, args, dirs, device):
 
 
 # ------------------------------------------------ Phase B: labels + text (vLLM)
-def fork_k(policy, R, first_disagree):
-    if policy == "whole_rewrite":
-        return 0
-    if policy == "relay":
-        return min(first_disagree, R - 1)
-    if policy == "fixed0.5":
-        return R // 2
-    raise ValueError(policy)
+def fork_k(frac, R):
+    return max(0, min(int(frac * R), R - 1))
 
 
 def phase_b(pool, fork_points, args, dirs, tok):
@@ -203,35 +197,35 @@ def phase_b(pool, fork_points, args, dirs, tok):
     sp = SamplingParams(n=args.n_label, temperature=args.temperature, top_p=0.95,
                         max_tokens=args.max_new_tokens)
 
-    # already-done (traj_id, policy) pairs -> resume by skipping them
+    # already-done (traj_id, frac) pairs -> resume by skipping them
     labels_path = os.path.join(args.out, "labels.jsonl")
     done = set()
     if os.path.exists(labels_path):
         for line in open(labels_path):
             d = json.loads(line)
-            done.add((d["traj_id"], d["policy"]))
+            done.add((d["traj_id"], round(d["frac"], 4)))
 
-    # build every remaining (traj, policy) generation request
-    reqs = []          # (traj_id, policy, k, prompt_token_ids, gt)
+    # build every remaining (traj, frac) generation request
+    reqs = []          # (traj_id, frac, k, prompt_token_ids, gt)
     by_traj = {ex["traj_id"]: ex for ex in pool}
     for ex in pool:
         fp = fork_points.get(str(ex["traj_id"])) or fork_points.get(ex["traj_id"])
         if fp is None:
             continue                                   # no features yet for this traj
         R = len(ex["resp_ids"])
-        for pol in args.policies:
-            if (ex["traj_id"], pol) in done:
+        for frac in args.fracs:
+            if (ex["traj_id"], round(frac, 4)) in done:
                 continue
-            k = fork_k(pol, R, fp["first_disagree"])
+            k = fork_k(frac, R)
             ctx = ex["prompt_ids"] + ex["resp_ids"][:k]
-            reqs.append((ex["traj_id"], pol, k, ctx, ex["gt"]))
+            reqs.append((ex["traj_id"], frac, k, ctx, ex["gt"]))
     print(f"[phase B] {len(reqs)} requests to run ({len(done)} already done)", flush=True)
 
     labels_f = open(labels_path, "a")                  # append (resume-safe)
     for c0 in range(0, len(reqs), args.gen_chunk):
         chunk = reqs[c0:c0 + args.gen_chunk]
         outs = llm.generate([{"prompt_token_ids": c[3]} for c in chunk], sampling_params=sp)
-        for (traj_id, pol, k, ctx, gt), o in zip(chunk, outs):
+        for (traj_id, frac, k, ctx, gt), o in zip(chunk, outs):
             R = len(by_traj[traj_id]["resp_ids"])
             prefix = tok.decode(by_traj[traj_id]["resp_ids"][:k], skip_special_tokens=True)
             comps = []
@@ -240,12 +234,16 @@ def phase_b(pool, fork_points, args, dirs, tok):
                 ok = is_correct(prefix + s.text, gt)
                 n_rec += int(ok)
                 comps.append({"text": s.text, "recovered": ok, "n_tok": len(s.token_ids)})
-            # completion text (premise training data) — one file per (traj, policy)
-            with open(os.path.join(dirs["completions"], f"{traj_id}__{pol}.jsonl"), "w") as cf:
-                for c in comps:
-                    cf.write(json.dumps(c) + "\n")
+            # keep only the completion TEXT we asked for (labels always keep the count)
+            keep = (comps if args.save_completions == "all"
+                    else [c for c in comps if c["recovered"]] if args.save_completions == "recovered"
+                    else [])
+            if keep:
+                with open(os.path.join(dirs["completions"], f"{traj_id}__frac{frac}.jsonl"), "w") as cf:
+                    for c in keep:
+                        cf.write(json.dumps(c) + "\n")
             labels_f.write(json.dumps({
-                "traj_id": traj_id, "policy": pol, "fork_k": k, "R": R,
+                "traj_id": traj_id, "frac": frac, "fork_k": k, "R": R,
                 "n": args.n_label, "recover_rate": n_rec / args.n_label,
             }) + "\n")
         labels_f.flush()                               # checkpoint (resume-safe)
@@ -263,10 +261,12 @@ def main():
     ap.add_argument("--student", default="Qwen/Qwen3-1.7B")
     ap.add_argument("--max-traj", type=int, default=0, help="0 = all")
     # knob 1: label sampling
-    ap.add_argument("--n-label", type=int, default=32, help="teacher samples per policy (soft label)")
-    # knob 2: fork policies
-    ap.add_argument("--policies", default=",".join(POLICIES),
-                    help="comma list from {whole_rewrite,relay,fixed0.5}")
+    ap.add_argument("--n-label", type=int, default=8, help="teacher samples per fork point (soft label)")
+    # knob 2: fork points (fractions of the response to fork at)
+    ap.add_argument("--fracs", default=",".join(str(f) for f in FRACS),
+                    help="comma list of fork fractions, e.g. 0,0.15,0.3,0.45,0.6,0.75")
+    ap.add_argument("--save-completions", default="recovered", choices=["none", "recovered", "all"],
+                    help="which completion TEXTs to keep (labels always keep the count)")
     # knob 3: hidden-state scope
     ap.add_argument("--hidden-subset", type=int, default=800,
                     help="store per-position teacher hidden for this many traj (0 = all)")
@@ -284,7 +284,7 @@ def main():
     ap.add_argument("--skip-phase-a", action="store_true")
     ap.add_argument("--skip-phase-b", action="store_true")
     args = ap.parse_args()
-    args.policies = [p for p in args.policies.split(",") if p]
+    args.fracs = [float(f) for f in args.fracs.split(",") if f]
 
     device = "cuda"
     dirs = {k: os.path.join(args.out, k) for k in ["features", "hidden", "completions"]}
