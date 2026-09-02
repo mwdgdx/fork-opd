@@ -29,6 +29,7 @@ from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from sklearn.neural_network import MLPRegressor
 
 GROUPS = {  # column-prefix -> feature group
+    "position": ("k_over_R", "pre_"),   # fork position + kept-prefix summary (varies with k)
     "student": ("s_lp_tok", "s_ent"),
     "teacher": ("t_lp_tok", "t_ent", "t_top1_lp", "agree", "rank", "disagree_rate"),
     "divergence": ("kl_st", "kl_ts", "topk_overlap"),
@@ -129,16 +130,22 @@ def main():
     # ---------------- optional: hidden-state probe ----------------
     if args.hidden:
         print("\n=== hidden-state probe (does 'semantic why/where' add over scalars?) ===")
-        idx_of = {int(t): k for k, t in enumerate(traj_ids)}   # traj_id -> row in table
+        # table has many rows per traj; aggregate to a per-traj target for the probe
+        from collections import defaultdict
+        tr_rows = defaultdict(list)
+        for i, t in enumerate(traj_ids):
+            tr_rows[int(t)].append(i)
+        tr_rate = {t: float(np.mean([y_soft[i] for i in idxs])) for t, idxs in tr_rows.items()}
+        tr_recov = {t: int(any(y_soft[i] > 0 for i in idxs)) for t, idxs in tr_rows.items()}
+        tr_group = {t: groups[idxs[0]] for t, idxs in tr_rows.items()}
         H, ys, ybh, gh = [], [], [], []
         for fn in sorted(os.listdir(args.hidden)):
             tid = int(fn.split(".")[0])
-            if tid not in idx_of:
+            if tid not in tr_rows:
                 continue
             hs = np.load(os.path.join(args.hidden, fn))["hidden"]   # [R, n_layers, H]
             H.append(hs.astype(np.float32).mean(0).ravel())         # mean-pool positions
-            k = idx_of[tid]
-            ys.append(y_soft[k]); ybh.append(y_bin[k]); gh.append(groups[k])
+            ys.append(tr_rate[tid]); ybh.append(tr_recov[tid]); gh.append(tr_group[tid])
         H = np.asarray(H); ys = np.asarray(ys); ybh = np.asarray(ybh); gh = np.asarray(gh)
         ns = min(args.n_splits, len(set(gh.tolist())))
         print(f"  hidden subset: {H.shape[0]} traj x {H.shape[1]} dims, {len(set(gh.tolist()))} problems")
